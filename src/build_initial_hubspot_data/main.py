@@ -108,24 +108,22 @@ def things_to_dataframe(things: list) -> pd.DataFrame:
         # Extract data from the thing
         prod_name = thing.get('id')
         production_date = thing.get('created_at')
+        updated_at = thing.get('updated_at')
 
         # Get coordinates and serial number from current_value.desired or current_value.reported
         current_value = thing.get('current_value', {})
-        desired = current_value.get('desired', {})
         reported = current_value.get('reported', {})
 
         # Try to get values from desired first, then reported as fallback
-        serial_number = desired.get(
-            'SERIAL_NUMBER') or reported.get('SERIAL_NUMBER')
-        latitude = desired.get(
-            'COORDINATES_LAT') or reported.get('COORDINATES_LAT')
-        longitude = desired.get(
-            'COORDINATES_LON') or reported.get('COORDINATES_LON')
+        serial_number = reported.get('SERIAL_NUMBER')
+        latitude = reported.get('COORDINATES_LAT')
+        longitude = reported.get('COORDINATES_LON')
 
         data.append({
             'prod_name': prod_name,
             'numero_de_s_rie': serial_number,
             'date_de_producton': production_date,
+            'updated_at': updated_at,
             'latitude': latitude,
             'longitude': longitude
         })
@@ -240,16 +238,17 @@ def active_sensors_to_dataframe(active_sensors: dict) -> pd.DataFrame:
 
     return pd.DataFrame(data)
 
+
 def add_status_column(df: pd.DataFrame, active_sensors: dict) -> pd.DataFrame:
     """Add status column using DataFrame join for better performance.
-    
+
     Parameters
     ----------
     df : pd.DataFrame
         DataFrame with prod_name column
     active_sensors : dict
         Dictionary containing active sensors data from API
-        
+
     Returns
     -------
     pd.DataFrame
@@ -257,22 +256,65 @@ def add_status_column(df: pd.DataFrame, active_sensors: dict) -> pd.DataFrame:
     """
     # Convert active sensors to DataFrame
     active_df = active_sensors_to_dataframe(active_sensors)
-    
+
     # Left join on prod_name = thing_id
     df_with_status = df.merge(
-        active_df[['thing_id', 'etat']], 
-        left_on='prod_name', 
-        right_on='thing_id', 
+        active_df[['thing_id', 'etat']],
+        left_on='prod_name',
+        right_on='thing_id',
         how='left'
     )
-    
+
     # Fill NaN values with 'Non opérationnel'
     df_with_status['etat'] = df_with_status['etat'].fillna('Non opérationnel')
-    
+
     # Drop the extra thing_id column from the join
     df_with_status = df_with_status.drop('thing_id', axis=1)
-    
+
     return df_with_status
+
+
+def add_activation_date_column(df: pd.DataFrame) -> None:
+    """Add activation date column based on status and updated_at.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with 'updated_at' and 'etat' columns
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with added 'date_activation_sur_pm_actuel' column
+    """
+
+    # Add the activation date column
+    df['date_activation_sur_pm_actuel'] = df.apply(
+        lambda row: row['updated_at'] if row['etat'] == 'Opérationnel' else None,
+        axis=1
+    )
+
+
+def add_deactivation_date_column(df: pd.DataFrame) -> None:
+    """Add deactivation date column based on status and updated_at.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with 'updated_at' and 'etat' columns
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with added 'date_desactivation' column
+    """
+
+    # Add the deactivation date column using np.where for efficiency
+    df['date_desactivation'] = df.apply(
+        lambda row: row['updated_at'] if row['etat'] == 'Non opérationnel' else None,
+        axis=1
+    )
+
 
 def main() -> NoReturn:  # pragma: no cover
     """Entry point."""
@@ -286,6 +328,8 @@ def main() -> NoReturn:  # pragma: no cover
 
     active_sensors = control_center.active_sensors()
     things = add_status_column(things, active_sensors)
+    add_activation_date_column(things)
+    add_deactivation_date_column(things)
     # print(active_sensors)
 
     print(things)
