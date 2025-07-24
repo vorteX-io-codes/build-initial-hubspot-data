@@ -64,7 +64,6 @@ class ControlCenterApi:
         self.headers = {'Authorization': f'Bearer {credentials.token}'}
 
     def get(self, url, **params):
-        print(params)
         response = requests.get(
             url,
             headers=self.headers,
@@ -164,7 +163,7 @@ def extract_version_from_serial(serial_number: str) -> Optional[str]:
     return None
 
 
-def add_version_column(df: pd.DataFrame) -> pd.DataFrame:
+def add_version_column(df: pd.DataFrame) -> None:
     """Add version column to DataFrame based on serial_number.
 
     Parameters
@@ -180,15 +179,116 @@ def add_version_column(df: pd.DataFrame) -> pd.DataFrame:
     df['version'] = df['numero_de_s_rie'].apply(extract_version_from_serial)
 
 
+def add_feature_columns(df: pd.DataFrame) -> None:
+    """Add feature columns (hauteur, temperature, image) based on version.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with version column
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with added feature columns
+    """
+
+    def get_features(version_str):
+        if version_str is None:
+            return 'Non', 'Non', 'Non'
+
+        try:
+            # Convert version string to float for comparison
+            version_float = float(version_str)
+
+            if version_float >= 2.1:
+                return 'Oui', 'Oui', 'Oui'  # hauteur, temperature, image
+            else:
+                return 'Oui', 'Non', 'Oui'  # hauteur, temperature, image
+        except (ValueError, TypeError):
+            # If version can't be converted to float, default to all 'Non'
+            return 'Non', 'Non', 'Non'
+
+    # Apply the function to create the three columns
+    df[['hauteur', 'temperature', 'image']] = df['version'].apply(
+        lambda x: pd.Series(get_features(x))
+    )
+
+
+def active_sensors_to_dataframe(active_sensors: dict) -> pd.DataFrame:
+    """Transform active sensors data into a pandas DataFrame.
+
+    Parameters
+    ----------
+    active_sensors : dict
+        Dictionary containing active sensors data from API
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns: thing_id, sensor_human_name, etat
+    """
+    data = []
+
+    if 'data' in active_sensors:
+        for sensor in active_sensors['data']:
+            data.append({
+                'thing_id': sensor.get('thing_id'),
+                'sensor_human_name': sensor.get('sensor_human_name'),
+                'etat': 'Opérationnel'
+            })
+
+    return pd.DataFrame(data)
+
+def add_status_column(df: pd.DataFrame, active_sensors: dict) -> pd.DataFrame:
+    """Add status column using DataFrame join for better performance.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with prod_name column
+    active_sensors : dict
+        Dictionary containing active sensors data from API
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with added 'etat' column
+    """
+    # Convert active sensors to DataFrame
+    active_df = active_sensors_to_dataframe(active_sensors)
+    
+    # Left join on prod_name = thing_id
+    df_with_status = df.merge(
+        active_df[['thing_id', 'etat']], 
+        left_on='prod_name', 
+        right_on='thing_id', 
+        how='left'
+    )
+    
+    # Fill NaN values with 'Non opérationnel'
+    df_with_status['etat'] = df_with_status['etat'].fillna('Non opérationnel')
+    
+    # Drop the extra thing_id column from the join
+    df_with_status = df_with_status.drop('thing_id', axis=1)
+    
+    return df_with_status
+
 def main() -> NoReturn:  # pragma: no cover
     """Entry point."""
     credentials = ControlCenterCredentials.from_env()
     control_center = ControlCenterApi(credentials)
     things = control_center.list_thing()
 
-    things_df = things_to_dataframe(things)
-    add_version_column(things_df)
-    print(things_df)
+    things = things_to_dataframe(things)
+    add_version_column(things)
+    add_feature_columns(things)
+
+    active_sensors = control_center.active_sensors()
+    things = add_status_column(things, active_sensors)
+    # print(active_sensors)
+
+    print(things)
 
     sys.exit(0)
 
