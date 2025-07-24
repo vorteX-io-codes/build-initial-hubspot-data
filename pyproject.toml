@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "click>=8.2.1",
     "dotenv>=0.9.9",
+    "pandas>=2.3.1",
     "requests>=2.32.4",
 ]
 
@@ -35,3 +36,8 @@ inline-quotes = "single"
 
 [tool.coverage.run]
 omit = ["*/tests/*", "*/__init__.py"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.4",
+]
