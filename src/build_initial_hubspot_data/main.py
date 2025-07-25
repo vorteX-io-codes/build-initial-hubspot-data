@@ -7,7 +7,10 @@ import sys
 import urllib.parse
 from dataclasses import dataclass
 from typing import NewType, NoReturn, Optional
+import boto3
 import pandas as pd
+from datetime import datetime
+from boto3.dynamodb.conditions import Key
 
 import requests
 from dotenv import load_dotenv
@@ -316,24 +319,53 @@ def add_deactivation_date_column(df: pd.DataFrame) -> None:
     )
 
 
+PAYLOAD_DATABASE_TABLE = 'metrics_prod'
+Sensor = NewType('Sensor', str)
+StartDate = NewType('StartDate', datetime)
+EndDate = NewType('EndDate', datetime)
+RawPayload = NewType('RawPayload', dict)
+RawPayloads = list[RawPayload]
+
+
+class PayloadDatabase:
+
+    def __init__(self) -> None:
+        # session = boto3.Session(profile_name=PAYLOAD_DATABASE_AWS_PROFILE)
+        dynamodb = boto3.resource('dynamodb')
+        self.table = dynamodb.Table(PAYLOAD_DATABASE_TABLE)
+
+    def get(self, sensor: Sensor, prod_number: str) -> RawPayloads:
+        response = self.table.query(
+            KeyConditionExpression=Key('human_name').eq(sensor) & Key('id').eq(prod_number),
+            # True = ordre croissant (plus ancien en premier)
+            ScanIndexForward=True,
+            Limit=1
+        )
+        return response['Items'][0] if response['Items'] else None
+
+
 def main() -> NoReturn:  # pragma: no cover
     """Entry point."""
-    credentials = ControlCenterCredentials.from_env()
-    control_center = ControlCenterApi(credentials)
-    things = control_center.list_thing()
+    # credentials = ControlCenterCredentials.from_env()
+    # control_center = ControlCenterApi(credentials)
+    # things = control_center.list_thing()
 
-    things = things_to_dataframe(things)
-    add_version_column(things)
-    add_feature_columns(things)
+    # things = things_to_dataframe(things)
+    # add_version_column(things)
+    # add_feature_columns(things)
 
-    active_sensors = control_center.active_sensors()
-    things = add_status_column(things, active_sensors)
-    add_activation_date_column(things)
-    add_deactivation_date_column(things)
-    # print(active_sensors)
+    # active_sensors = control_center.active_sensors()
+    # things = add_status_column(things, active_sensors)
+    # add_activation_date_column(things)
+    # add_deactivation_date_column(things)
+    # # print(active_sensors)
 
-    print(things)
+    # print(things)
+    # print(things.dtypes)
 
+    payload_db = PayloadDatabase()
+    payloads = payload_db.get(Sensor('balma_2'), 'prod_1000000026046db9')
+    print(payloads)
     sys.exit(0)
 
 
