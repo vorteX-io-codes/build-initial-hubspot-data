@@ -81,6 +81,11 @@ class ControlCenterApi:
                                    '/api/get-sensors')
         return self.get(url, status=status, args=args)
 
+    def get_sensor(self, name: str, args=None) -> dict:
+        url = urllib.parse.urljoin(self.endpoint.geturl(),
+                                   f'/api/v1/sensor/{name}')
+        return self.get(url, args=args)
+
     def active_sensors(self):
         url = urllib.parse.urljoin(self.endpoint.geturl(),
                                    '/api/activeSensors')
@@ -216,13 +221,13 @@ def add_feature_columns(df: pd.DataFrame) -> None:
     )
 
 
-def active_sensors_to_dataframe(active_sensors: dict) -> pd.DataFrame:
-    """Transform active sensors data into a pandas DataFrame.
+def sensors_to_dataframe(sensors: dict) -> pd.DataFrame:
+    """Transform sensors data into a pandas DataFrame.
 
     Parameters
     ----------
     active_sensors : dict
-        Dictionary containing active sensors data from API
+        Dictionary containing sensors data from API
 
     Returns
     -------
@@ -231,18 +236,19 @@ def active_sensors_to_dataframe(active_sensors: dict) -> pd.DataFrame:
     """
     data = []
 
-    if 'data' in active_sensors:
-        for sensor in active_sensors['data']:
+    if 'data' in sensors:
+        for sensor in sensors['data']:
+            thing_id = sensor.get('thing_active', {}).get('id')
             data.append({
-                'thing_id': sensor.get('thing_id'),
-                'sensor_human_name': sensor.get('sensor_human_name'),
-                'etat': 'Opérationnel'
+                'thing_id': thing_id,
+                'sensor_human_name': sensor.get('human_name'),
+                'etat': None if thing_id is None else 'Opérationnel'
             })
 
     return pd.DataFrame(data)
 
 
-def add_status_column(df: pd.DataFrame, active_sensors: dict) -> pd.DataFrame:
+def add_status_column(df: pd.DataFrame, sensors: dict) -> pd.DataFrame:
     """Add status column using DataFrame join for better performance.
 
     Parameters
@@ -258,7 +264,7 @@ def add_status_column(df: pd.DataFrame, active_sensors: dict) -> pd.DataFrame:
         DataFrame with added 'etat' column
     """
     # Convert active sensors to DataFrame
-    active_df = active_sensors_to_dataframe(active_sensors)
+    active_df = sensors_to_dataframe(sensors)
 
     # Left join on prod_name = thing_id
     df_with_status = df.merge(
@@ -336,36 +342,53 @@ class PayloadDatabase:
 
     def get(self, sensor: Sensor, prod_number: str) -> RawPayloads:
         response = self.table.query(
-            KeyConditionExpression=Key('human_name').eq(sensor) & Key('id').eq(prod_number),
-            # True = ordre croissant (plus ancien en premier)
-            ScanIndexForward=True,
-            Limit=1
+            IndexName='id-human_name-index',
+            KeyConditionExpression=Key('id').eq(
+                prod_number) & Key('human_name').eq(sensor),
+            ScanIndexForward=True,  # Équivalent de ScanIndexForward = true
+            Limit=1  # Équivalent de ->first()
         )
         return response['Items'][0] if response['Items'] else None
 
 
+def build_link_dates(sensors) -> pd.DataFrame:
+    link_dates = []
+    payload_db = PayloadDatabase()
+    for sensor in sensors['data']:
+        for thing in sensor.get('all_things', []):
+            prod_number = thing['id']
+
+            first_payload = payload_db.get(
+                Sensor(sensor['human_name']), prod_number)
+            if first_payload is not None:
+                link_dates.append({'prod_name': prod_number,
+                                   'link_date': first_payload['time_stamp']})
+
+    return pd.DataFrame(link_dates)
+
+
 def main() -> NoReturn:  # pragma: no cover
     """Entry point."""
-    # credentials = ControlCenterCredentials.from_env()
-    # control_center = ControlCenterApi(credentials)
-    # things = control_center.list_thing()
+    credentials = ControlCenterCredentials.from_env()
+    control_center = ControlCenterApi(credentials)
 
-    # things = things_to_dataframe(things)
-    # add_version_column(things)
-    # add_feature_columns(things)
+    things = control_center.list_thing()
 
-    # active_sensors = control_center.active_sensors()
-    # things = add_status_column(things, active_sensors)
-    # add_activation_date_column(things)
-    # add_deactivation_date_column(things)
-    # # print(active_sensors)
+    things = things_to_dataframe(things)
+    add_version_column(things)
+    add_feature_columns(things)
+
+    sensors = control_center.get_sensors(args='thing,human_name,all_things')
+    things = add_status_column(things, sensors)
+    add_activation_date_column(things)
+    add_deactivation_date_column(things)
+    # print(sensors)
 
     # print(things)
     # print(things.dtypes)
 
-    payload_db = PayloadDatabase()
-    payloads = payload_db.get(Sensor('balma_2'), 'prod_1000000026046db9')
-    print(payloads)
+    link_date = build_link_dates(sensors)
+
     sys.exit(0)
 
 
