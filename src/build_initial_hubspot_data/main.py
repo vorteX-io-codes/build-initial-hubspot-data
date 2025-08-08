@@ -429,6 +429,104 @@ def get_link_date(payload: PayloadDatabase.RawPayload) -> Optional[pd.Timestamp]
     return payload['time_stamp']
 
 
+PlmnCode = NewType('PlmnCode', str)
+OperatorName = NewType('OperatorName', str)
+OperatorPlmnMappings = NewType('OperatorPlmnMappings', dict)
+
+
+def extract_plmn_code_from_qnwinfo(response: str) -> PlmnCode | None:
+    """Extract the PLMN code from a +QNWINFO response string.
+
+    Parameters
+    ----------
+    response : str
+        The +QNWINFO response string, e.g. '+QNWINFO: "FDD LTE","20820","LTE BAND 103",73A'
+
+    Returns
+    -------
+    PlmnCode | None
+        The extracted PLMN code, or None if not found
+    """
+    pattern = r'\+QNWINFO:\s*"[^"]*","(\d{5})",'
+    match = re.search(pattern, response)
+    if match:
+        return PlmnCode(match.group(1))
+
+
+def get_operator_plmn_mappings() -> OperatorPlmnMappings:
+    """Return the mapping of PLMN codes to operator names.
+
+    Returns
+    -------
+    OperatorPlmnMappings
+        Dictionary mapping PLMN code to operator name
+    """
+    return OperatorPlmnMappings({
+        PlmnCode('20801'): OperatorName('Orange'),
+        PlmnCode('20810'): OperatorName('SFR'),
+        PlmnCode('20815'): OperatorName('Free'),
+        PlmnCode('20820'): OperatorName('Bouygues Telecom'),
+    })
+
+
+def plmn_code_to_operator_name(plmn_code: PlmnCode) -> OperatorName | None:
+    """Convert a PLMN code to its operator name.
+
+    Parameters
+    ----------
+    plmn_code : PlmnCode
+        The PLMN code to look up
+
+    Returns
+    -------
+    OperatorName | None
+        The operator name if found, otherwise None
+    """
+    operator_plmn_mappings = get_operator_plmn_mappings()
+    return operator_plmn_mappings.get(plmn_code)
+
+
+def extract_operator_name_from_qnwinfo(qnwinfo: str) -> OperatorName | None:
+    """Extract the operator name from a +QNWINFO response string.
+
+    Parameters
+    ----------
+    response : str
+        The +QNWINFO response string, e.g. '+QNWINFO: "FDD LTE","20820","LTE BAND 103",73A'
+
+    Returns
+    -------
+    OperatorName | None
+        The extracted operator name, or None if not found
+    """
+    plmn_code = extract_plmn_code_from_qnwinfo(qnwinfo)
+    if plmn_code:
+        return plmn_code_to_operator_name(plmn_code)
+
+
+def get_link_operator_from_qnwinfo(payload: PayloadDatabase.RawPayload) -> OperatorName | None:
+    """Get the link operator info from a +QNWINFO field in the payload.
+
+    Parameters
+    ----------
+    payload : RawPayload
+        The payload dictionary containing sensor data
+
+    Returns
+    -------
+    OperatorName | None
+        The operator name if found, otherwise None
+    """
+    qnwinfo = payload.get('qnwinfo')
+    match qnwinfo:
+        case [str() as v]:
+            return extract_operator_name_from_qnwinfo(v)
+        case str() as v:
+            return extract_operator_name_from_qnwinfo(v)
+        case _:
+            return
+
+
 LinkDates = NewType('LinkDates', pd.DataFrame)
 
 
@@ -456,17 +554,20 @@ def get_link_dates(sensors: Sensors, control_center: ControlCenterApi) -> LinkDa
             first_payload = payload_db.get_first_payload(
                 human_name, prod_number)
             link_date = get_link_date(first_payload) if first_payload else None
+            link_operator = get_link_operator_from_qnwinfo(
+                first_payload) if first_payload else None
             link_dates.append({
                 'human_name': human_name,
                 'prod_name': prod_number,
                 'link_date': link_date,
+                'link_operator': link_operator,
             })
     dataframe = pd.DataFrame(link_dates)
     dataframe.sort_values(by='human_name', inplace=True)
     return LinkDates(dataframe)
 
 
-def add_last_link_date(things: Things, link_dates: LinkDates) -> Things:
+def add_sensor_link_date(things: Things, link_dates: LinkDates) -> Things:
     """Add link date column to things DataFrame using link_dates.
 
     Parameters
@@ -484,9 +585,12 @@ def add_last_link_date(things: Things, link_dates: LinkDates) -> Things:
     None
     """
 
-    things_merged = things.merge(link_dates[['human_name', 'link_date']], on='human_name', how='left')
-
+    things_merged = things.merge(
+        link_dates[['human_name', 'link_date', 'link_operator']], on='human_name', how='left')
+    things_merged.rename(columns={'link_date': 'sensor_link_date',
+                         'link_operator': 'sensor_link_operator'}, inplace=True)
     return things_merged
+
 
 def add_first_link_date(things: Things, link_dates: LinkDates) -> Things:
     """Add first link date column to things DataFrame using the oldest link date per prod_name.
@@ -518,6 +622,7 @@ def add_first_link_date(things: Things, link_dates: LinkDates) -> Things:
     )
     return things_merged
 
+
 def main() -> NoReturn:  # pragma: no cover
     """Entry point."""
     credentials = ControlCenterCredentials.from_env()
@@ -530,15 +635,14 @@ def main() -> NoReturn:  # pragma: no cover
 
     sensors = sensors_to_dataframe(
         control_center.get_sensors(args='thing,human_name'))
-    
-    things = add_human_name_column(things, sensors)
 
+    things = add_human_name_column(things, sensors)
 
     sensors = Sensors(sensors.head(10))
     link_dates = get_link_dates(sensors, control_center)
     link_dates.to_csv('link_dates.csv', index=False, sep=";", encoding='utf-8')
 
-    things = add_last_link_date(things, link_dates)
+    things = add_sensor_link_date(things, link_dates)
     things = add_first_link_date(things, link_dates)
     things.to_csv('things.csv', index=False, sep=";", encoding='utf-8')
 
