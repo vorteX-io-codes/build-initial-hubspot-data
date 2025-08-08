@@ -413,7 +413,7 @@ class PayloadDatabase:
         return response['Items'][0] if response['Items'] else None
 
 
-def get_link_date(human_name: PayloadDatabase.HumanName, prod_number: PayloadDatabase.ProdNumber, payload_db: PayloadDatabase) -> Optional[pd.Timestamp]:
+def get_link_date(payload: PayloadDatabase.RawPayload) -> Optional[pd.Timestamp]:
     """Get the link date for a specific sensor.
 
     Parameters
@@ -426,8 +426,7 @@ def get_link_date(human_name: PayloadDatabase.HumanName, prod_number: PayloadDat
     Optional[pd.Timestamp]
         The link date if found, otherwise None
     """
-    first_payload = payload_db.get_first_payload(human_name, prod_number)
-    return None if first_payload is None else first_payload['time_stamp']
+    return payload['time_stamp']
 
 
 LinkDates = NewType('LinkDates', pd.DataFrame)
@@ -454,8 +453,9 @@ def get_link_dates(sensors: Sensors, control_center: ControlCenterApi) -> LinkDa
         all_things = control_center.get_sensor_all_things(human_name)
         for thing in all_things:
             prod_number = thing['id']
-            link_date = get_link_date(PayloadDatabase.HumanName(
-                human_name), PayloadDatabase.ProdNumber(prod_number), payload_db)
+            first_payload = payload_db.get_first_payload(
+                human_name, prod_number)
+            link_date = get_link_date(first_payload) if first_payload else None
             link_dates.append({
                 'human_name': human_name,
                 'prod_name': prod_number,
