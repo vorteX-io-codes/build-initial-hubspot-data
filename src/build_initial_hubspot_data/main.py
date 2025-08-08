@@ -624,11 +624,17 @@ def add_sensor_link_date(things: Things, link_dates: LinkDates) -> Things:
     -------
     None
     """
+    latest_link_dates = (
+        link_dates
+        .sort_values('link_date', ascending=False)
+        .drop_duplicates(subset=['human_name'], keep='first')
+        .drop(columns=['human_name', 'unlink_date'])
+    )
+
 
     things_merged = things.merge(
-        link_dates[['human_name', 'link_date', 'link_operator']], on='human_name', how='left')
-    return things_merged.rename(columns={'link_date': 'sensor_link_date',
-                                         'link_operator': 'sensor_link_operator'})
+        latest_link_dates, on='prod_name', how='left')
+    return things_merged.rename(columns={'link_operator': 'last_link_operator', 'link_date': 'last_link_date'})
 
 
 def add_last_unlink_date(things: Things, link_dates: LinkDates) -> Things:
