@@ -6,13 +6,12 @@ import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from typing import NewType, NoReturn, Optional, Any
+from typing import NewType, NoReturn
+
 import boto3
 import pandas as pd
-from datetime import datetime
-from boto3.dynamodb.conditions import Key
-
 import requests
+from boto3.dynamodb.conditions import Key
 from dotenv import load_dotenv
 
 logger = logging.getLogger()
@@ -81,7 +80,7 @@ class ControlCenterApi:
         self.headers: ControlCenterApi.Headers = ControlCenterApi.Headers(
             {'Authorization': f'Bearer {credentials.token}'})
 
-    def get(self, url: str, **params: Any) -> Any:
+    def get(self, url: str, **params: str) -> dict:
         """Perform a GET request to the specified URL with authorization headers.
 
         Parameters
@@ -105,7 +104,7 @@ class ControlCenterApi:
         response.raise_for_status()
         return response.json()
 
-    def get_sensors(self, status: str = 'all', args: Any = None) -> 'ControlCenterApi.Sensors':
+    def get_sensors(self, status: str = 'all', args: str | None = None) -> 'ControlCenterApi.Sensors':
         """Retrieve sensors from the Control Center API.
 
         Parameters
@@ -125,7 +124,7 @@ class ControlCenterApi:
         sensors_data = response.get('data', [])
         return ControlCenterApi.Sensors(sensors_data)
 
-    def get_sensor(self, human_name: str, args: Any = None) -> 'ControlCenterApi.Sensor':
+    def get_sensor(self, human_name: str, args: str | None = None) -> 'ControlCenterApi.Sensor':
         """Retrieve a specific sensor by its human-readable name.
 
         Parameters
@@ -221,13 +220,13 @@ def things_to_dataframe(things: ControlCenterApi.Things) -> Things:
             'production_date': production_date,
             'updated_at': updated_at,
             'latitude': latitude,
-            'longitude': longitude
+            'longitude': longitude,
         })
 
     return Things(pd.DataFrame(data))
 
 
-def extract_version_from_serial(serial_number: str) -> Optional[str]:
+def extract_version_from_serial(serial_number: str) -> str | None:
     """Extract version from serial number.
 
     Parameters
@@ -272,6 +271,9 @@ def add_version_column(things: Things) -> None:
         extract_version_from_serial)
 
 
+FEATURE_VERSION_THRESHOLD = 2.1  # Magic value for version threshold
+
+
 def add_feature_columns(things: Things) -> None:
     """Add feature columns (hauteur, temperature, image) based on version.
 
@@ -284,21 +286,20 @@ def add_feature_columns(things: Things) -> None:
     -------
     None
     """
-    def get_features(version_str: Optional[str]) -> tuple[str, str, str]:
+    def get_features(version_str: str | None) -> tuple[str, str, str]:
         if version_str is None:
             return 'Non', 'Non', 'Non'
         try:
             version_float = float(version_str)
-            if version_float >= 2.1:
+            if version_float >= FEATURE_VERSION_THRESHOLD:
                 return 'Oui', 'Oui', 'Oui'  # hauteur, temperature, image
-            else:
-                return 'Oui', 'Non', 'Oui'  # hauteur, temperature, image
+            return 'Oui', 'Non', 'Oui'  # hauteur, temperature, image
         except (ValueError, TypeError):
             # If version can't be converted to float, default to all 'Non'
             return 'Non', 'Non', 'Non'
 
     things[['hauteur', 'temperature', 'image']] = things['version'].apply(
-        lambda x: pd.Series(get_features(x))
+        lambda x: pd.Series(get_features(x)),
     )
 
 
@@ -346,13 +347,11 @@ def add_human_name_column(things: Things, sensors: Sensors) -> Things:
     """
 
     # Left join on prod_name = thing_id
-    things_with_human_name = things.merge(
+    return things.merge(
         sensors,
         on='prod_name',
-        how='left'
+        how='left',
     )
-
-    return things_with_human_name
 
 
 def add_deactivation_date_column(things: Things) -> None:
@@ -371,7 +370,7 @@ def add_deactivation_date_column(things: Things) -> None:
     # Add the deactivation date column using np.where for efficiency
     things['deactivation_date'] = things.apply(
         lambda row: row['updated_at'] if row['status'] == 'Out of order' else None,
-        axis=1
+        axis=1,
     )
 
 
@@ -388,7 +387,7 @@ class PayloadDatabase:
         dynamodb = boto3.resource('dynamodb')
         self.table = dynamodb.Table(PayloadDatabase.PAYLOAD_DATABASE_TABLE)
 
-    def get_first_payload(self, human_name: 'PayloadDatabase.HumanName', prod_number: 'PayloadDatabase.ProdNumber') -> Optional[RawPayload]:
+    def get_first_payload(self, human_name: 'PayloadDatabase.HumanName', prod_number: 'PayloadDatabase.ProdNumber') -> RawPayload | None:
         """Get the first payload for a sensor and prod_number.
 
         Parameters
@@ -408,12 +407,36 @@ class PayloadDatabase:
             KeyConditionExpression=Key('id').eq(
                 prod_number) & Key('human_name').eq(human_name),
             ScanIndexForward=True,
-            Limit=1
+            Limit=1,
+        )
+        return response['Items'][0] if response['Items'] else None
+
+    def get_last_payload(self, human_name: 'PayloadDatabase.HumanName', prod_number: 'PayloadDatabase.ProdNumber') -> RawPayload | None:
+        """Get the last payload for a sensor and prod_number.
+
+        Parameters
+        ----------
+        sensor : Sensor
+            The sensor human name as a custom type
+        prod_number : str
+            The production number
+
+        Returns
+        -------
+        Optional[RawPayload]
+            The last payload dictionary if found, otherwise None
+        """
+        response = self.table.query(
+            IndexName='id-human_name-index',
+            KeyConditionExpression=Key('id').eq(
+                prod_number) & Key('human_name').eq(human_name),
+            ScanIndexForward=False,
+            Limit=1,
         )
         return response['Items'][0] if response['Items'] else None
 
 
-def get_link_date(payload: PayloadDatabase.RawPayload) -> Optional[pd.Timestamp]:
+def get_timestamp(payload: PayloadDatabase.RawPayload) -> pd.Timestamp | None:
     """Get the link date for a specific sensor.
 
     Parameters
@@ -451,6 +474,7 @@ def extract_plmn_code_from_qnwinfo(response: str) -> PlmnCode | None:
     match = re.search(pattern, response)
     if match:
         return PlmnCode(match.group(1))
+    return None
 
 
 def get_operator_plmn_mappings() -> OperatorPlmnMappings:
@@ -495,7 +519,7 @@ def plmn_code_to_operator_name(plmn_code: PlmnCode) -> OperatorName | None:
         The operator name if found, otherwise None
     """
     operator_plmn_mappings = get_operator_plmn_mappings()
-    return operator_plmn_mappings.get(plmn_code)
+    return operator_plmn_mappings.get(plmn_code, plmn_code)
 
 
 def extract_operator_name_from_qnwinfo(qnwinfo: str) -> OperatorName | None:
@@ -514,6 +538,7 @@ def extract_operator_name_from_qnwinfo(qnwinfo: str) -> OperatorName | None:
     plmn_code = extract_plmn_code_from_qnwinfo(qnwinfo)
     if plmn_code:
         return plmn_code_to_operator_name(plmn_code)
+    return None
 
 
 def get_link_operator_from_qnwinfo(payload: PayloadDatabase.RawPayload) -> OperatorName | None:
@@ -536,7 +561,7 @@ def get_link_operator_from_qnwinfo(payload: PayloadDatabase.RawPayload) -> Opera
         case str() as v:
             return extract_operator_name_from_qnwinfo(v)
         case _:
-            return
+            return None
 
 
 LinkDates = NewType('LinkDates', pd.DataFrame)
@@ -565,17 +590,20 @@ def get_link_dates(sensors: Sensors, control_center: ControlCenterApi) -> LinkDa
             prod_number = thing['id']
             first_payload = payload_db.get_first_payload(
                 human_name, prod_number)
-            link_date = get_link_date(first_payload) if first_payload else None
-            link_operator = get_link_operator_from_qnwinfo(
-                first_payload) if first_payload else None
+            last_payload = payload_db.get_last_payload(
+                human_name, prod_number)
+
             link_dates.append({
                 'human_name': human_name,
                 'prod_name': prod_number,
-                'link_date': link_date,
-                'link_operator': link_operator,
+                'link_date': get_timestamp(first_payload) if first_payload else None,
+                'link_operator': get_link_operator_from_qnwinfo(
+                    first_payload) if first_payload else None,
+                'unlink_date': get_timestamp(last_payload) if last_payload else None,
             })
+
     dataframe = pd.DataFrame(link_dates)
-    dataframe.sort_values(by='human_name', inplace=True)
+    dataframe = dataframe.sort_values(by='human_name')
     return LinkDates(dataframe)
 
 
@@ -599,9 +627,38 @@ def add_sensor_link_date(things: Things, link_dates: LinkDates) -> Things:
 
     things_merged = things.merge(
         link_dates[['human_name', 'link_date', 'link_operator']], on='human_name', how='left')
-    things_merged.rename(columns={'link_date': 'sensor_link_date',
-                         'link_operator': 'sensor_link_operator'}, inplace=True)
-    return things_merged
+    return things_merged.rename(columns={'link_date': 'sensor_link_date',
+                                         'link_operator': 'sensor_link_operator'})
+
+
+def add_last_unlink_date(things: Things, link_dates: LinkDates) -> Things:
+    """Add last link date column to things DataFrame using the latest link date per prod_name.
+
+    Parameters
+    ----------
+    things : Things
+        DataFrame containing things data
+    link_dates : LinkDates
+        DataFrame containing link dates for sensors and things
+
+    Returns
+    -------
+    Things
+        DataFrame with last link date column added
+    """
+    # Keep only the latest unlink_date for each prod_name
+    latest_unlink_dates = (
+        link_dates
+        .sort_values('unlink_date', ascending=False)
+        .drop_duplicates(subset=['prod_name'], keep='first')
+        .rename(columns={'unlink_date': 'last_unlink_date'})
+    )
+
+    return things.merge(
+        latest_unlink_dates[['prod_name', 'last_unlink_date']],
+        on='prod_name',
+        how='left',
+    )
 
 
 def add_first_link_date(things: Things, link_dates: LinkDates) -> Things:
@@ -627,12 +684,11 @@ def add_first_link_date(things: Things, link_dates: LinkDates) -> Things:
         .rename(columns={'link_date': 'first_link_date'})
     )
 
-    things_merged = things.merge(
+    return things.merge(
         oldest_link_dates[['prod_name', 'first_link_date']],
         on='prod_name',
-        how='left'
+        how='left',
     )
-    return things_merged
 
 
 def main() -> NoReturn:  # pragma: no cover
@@ -643,27 +699,21 @@ def main() -> NoReturn:  # pragma: no cover
     things = things_to_dataframe(control_center.list_things())
     add_version_column(things)
     add_feature_columns(things)
-    things.to_csv('things.csv', index=False, sep=";", encoding='utf-8')
+    things.to_csv('things.csv', index=False, sep=';', encoding='utf-8')
 
     sensors = sensors_to_dataframe(
         control_center.get_sensors(args='thing,human_name'))
 
     things = add_human_name_column(things, sensors)
 
-    sensors = Sensors(sensors.head(10))
+    # sensors = Sensors(sensors.head(20))
     link_dates = get_link_dates(sensors, control_center)
-    link_dates.to_csv('link_dates.csv', index=False, sep=";", encoding='utf-8')
+    link_dates.to_csv('link_dates.csv', index=False, sep=';', encoding='utf-8')
 
     things = add_sensor_link_date(things, link_dates)
     things = add_first_link_date(things, link_dates)
-    things.to_csv('things.csv', index=False, sep=";", encoding='utf-8')
-
-    # things = add_human_name_column(things, sensors)
-    # add_activation_date_column(things)
-    # add_deactivation_date_column(things)
-
-    # link_dates = build_link_dates(sensors, control_center)
-    #
+    things = add_last_unlink_date(things, link_dates)
+    things.to_csv('things.csv', index=False, sep=';', encoding='utf-8')
 
     sys.exit(0)
 
