@@ -466,6 +466,18 @@ def get_operator_plmn_mappings() -> OperatorPlmnMappings:
         PlmnCode('20810'): OperatorName('SFR'),
         PlmnCode('20815'): OperatorName('Free'),
         PlmnCode('20820'): OperatorName('Bouygues Telecom'),
+        PlmnCode('21407'): OperatorName('Movistar'),
+        PlmnCode('21901'): OperatorName('T-Mobile'),
+        PlmnCode('21902'): OperatorName('Telemach / Tele2'),
+        PlmnCode('21910'): OperatorName('A1 / VIP'),
+        PlmnCode('22210'): OperatorName('Vodafone'),
+        PlmnCode('22288'): OperatorName('WindTre / WIND'),
+        PlmnCode('23420'): OperatorName('3'),
+        PlmnCode('26201'): OperatorName('T-mobile'),
+        PlmnCode('50501'): OperatorName('Telstra'),
+        PlmnCode('60400'): OperatorName('Orange'),
+        PlmnCode('61701'): OperatorName('my.t mobile'),
+        PlmnCode('61710'): OperatorName('Emtel'),
     })
 
 
