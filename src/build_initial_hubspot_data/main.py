@@ -6,7 +6,7 @@ import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from typing import NewType, NoReturn, Optional
+from typing import NewType, NoReturn, Optional, Any
 import boto3
 import pandas as pd
 from datetime import datetime
@@ -20,14 +20,14 @@ logger.setLevel('INFO')
 
 load_dotenv()
 
-ControlCenterEndpoint = urllib.parse.ParseResult
-ControlCenterToken = NewType('ControlCenterToken', str)
-
 
 @dataclass(frozen=True)
 class ControlCenterCredentials:
-    endpoint: ControlCenterEndpoint
-    token: ControlCenterToken
+    Endpoint = urllib.parse.ParseResult
+    Token = NewType('Token', str)
+
+    endpoint: Endpoint
+    token: Token
 
     @classmethod
     def from_env(cls) -> 'ControlCenterCredentials':
@@ -56,17 +56,46 @@ class ControlCenterCredentials:
         parsed_endpoint = urllib.parse.urlparse(endpoint_url)
         return cls(
             endpoint=parsed_endpoint,
-            token=ControlCenterToken(token),
+            token=ControlCenterCredentials.Token(token),
         )
 
 
 class ControlCenterApi:
+    """API client for Control Center."""
+
+    Sensor = NewType('Sensor', dict)
+    Sensors = NewType('Sensors', list[Sensor])
+    Thing = NewType('Thing', dict)
+    Things = NewType('Things', list[Thing])
+    Headers = NewType('Headers', dict)
 
     def __init__(self, credentials: ControlCenterCredentials) -> None:
-        self.endpoint = credentials.endpoint
-        self.headers = {'Authorization': f'Bearer {credentials.token}'}
+        """Initialize the API client with credentials.
 
-    def get(self, url, **params):
+        Parameters
+        ----------
+        credentials : ControlCenterCredentials
+            Credentials for authentication
+        """
+        self.endpoint: ControlCenterCredentials.Endpoint = credentials.endpoint
+        self.headers: ControlCenterApi.Headers = ControlCenterApi.Headers(
+            {'Authorization': f'Bearer {credentials.token}'})
+
+    def get(self, url: str, **params: Any) -> Any:
+        """Perform a GET request to the specified URL with authorization headers.
+
+        Parameters
+        ----------
+        url : str
+            The URL to send the GET request to
+        params : dict
+            Additional parameters for the request
+
+        Returns
+        -------
+        Any
+            The JSON response from the API
+        """
         response = requests.get(
             url,
             headers=self.headers,
@@ -76,67 +105,126 @@ class ControlCenterApi:
         response.raise_for_status()
         return response.json()
 
-    def get_sensors(self, status: str = 'all', args=None) -> dict:
-        url = urllib.parse.urljoin(self.endpoint.geturl(),
-                                   '/api/get-sensors')
-        return self.get(url, status=status, args=args)
+    def get_sensors(self, status: str = 'all', args: Any = None) -> 'ControlCenterApi.Sensors':
+        """Retrieve sensors from the Control Center API.
 
-    def get_sensor(self, name: str, args=None) -> dict:
-        url = urllib.parse.urljoin(self.endpoint.geturl(),
-                                   f'/api/v1/sensor/{name}')
-        return self.get(url, args=args)
+        Parameters
+        ----------
+        status : str
+            Status filter for sensors (default is 'all')
+        args : Any, optional
+            Additional arguments for the API request
 
-    def active_sensors(self):
-        url = urllib.parse.urljoin(self.endpoint.geturl(),
-                                   '/api/activeSensors')
-        return self.get(url)
+        Returns
+        -------
+        Sensors
+            List of sensors data from the API
+        """
+        url = urllib.parse.urljoin(self.endpoint.geturl(), '/api/get-sensors')
+        response = self.get(url, status=status, args=args)
+        sensors_data = response.get('data', [])
+        return ControlCenterApi.Sensors(sensors_data)
 
-    def list_thing(self):
-        url = urllib.parse.urljoin(self.endpoint.geturl(),
-                                   '/api/listthing')
-        return self.get(url)
+    def get_sensor(self, human_name: str, args: Any = None) -> 'ControlCenterApi.Sensor':
+        """Retrieve a specific sensor by its human-readable name.
+
+        Parameters
+        ----------
+        sensor_name : str
+            Human-readable name of the sensor
+        args : Any, optional
+            Additional arguments for the API request
+
+        Returns
+        -------
+        Sensor
+            Sensor data retrieved from the API as a custom type
+        """
+        url = urllib.parse.urljoin(
+            self.endpoint.geturl(), f'/api/v1/sensor/{human_name}')
+        return ControlCenterApi.Sensor(self.get(url, args=args))
+
+    def get_active_sensors(self) -> 'ControlCenterApi.Sensors':
+        """Retrieve active sensors from the Control Center API.
+
+        Returns
+        -------
+        Sensors
+            List of active sensors from the API
+        """
+        url = urllib.parse.urljoin(
+            self.endpoint.geturl(), '/api/activeSensors')
+        response = self.get(url)
+        sensors_data = response.get('data', [])
+        return ControlCenterApi.Sensors(sensors_data)
+
+    def list_things(self) -> 'ControlCenterApi.Things':
+        """List all things.
+
+        Returns
+        -------
+        Things
+            List of things from the API
+        """
+        url = urllib.parse.urljoin(self.endpoint.geturl(), '/api/listthing')
+        return ControlCenterApi.Things(self.get(url))
+
+    def get_sensor_all_things(self, human_name: str) -> 'ControlCenterApi.Things':
+        """Retrieve all things associated with a given sensor.
+
+        Parameters
+        ----------
+        human_name : str
+            Human-readable name of the sensor
+
+        Returns
+        -------
+        Things
+            List of all things for the sensor as a custom type
+        """
+        response = self.get_sensor(human_name, args='all_things')
+        all_things = response.get('sensor', {}).get('all_things', [])
+        return ControlCenterApi.Things(all_things)
 
 
-def things_to_dataframe(things: list) -> pd.DataFrame:
+Things = NewType('Things', pd.DataFrame)
+
+
+def things_to_dataframe(things: ControlCenterApi.Things) -> Things:
     """Transform things data into a pandas DataFrame.
 
     Parameters
     ----------
-    things : list
+    things : RawThings
         List of thing dictionaries from the API
 
     Returns
     -------
-    pd.DataFrame
+    ThingsDataFrame
         DataFrame with columns: prod_name, serial_number, production_date, latitude, longitude
     """
-    data = []
+    data: list[dict] = []
 
     for thing in things:
-        # Extract data from the thing
         prod_name = thing.get('id')
         production_date = thing.get('created_at')
         updated_at = thing.get('updated_at')
-
-        # Get coordinates and serial number from current_value.desired or current_value.reported
         current_value = thing.get('current_value', {})
         reported = current_value.get('reported', {})
-
-        # Try to get values from desired first, then reported as fallback
         serial_number = reported.get('SERIAL_NUMBER')
         latitude = reported.get('COORDINATES_LAT')
         longitude = reported.get('COORDINATES_LON')
 
         data.append({
             'prod_name': prod_name,
-            'numero_de_s_rie': serial_number,
-            'date_de_producton': production_date,
+            'serial_number': serial_number,
+            'production_date': production_date,
             'updated_at': updated_at,
             'latitude': latitude,
             'longitude': longitude
         })
 
-    return pd.DataFrame(data)
+    return Things(pd.DataFrame(data))
 
 
 def extract_version_from_serial(serial_number: str) -> Optional[str]:
@@ -149,27 +237,26 @@ def extract_version_from_serial(serial_number: str) -> Optional[str]:
 
     Returns
     -------
-    str
+    Optional[str]
         Version in format 'X.Y' (e.g., '1.2') or None if not found
     """
     if not serial_number:
         return None
 
-    # Pattern to match 3 digits after 'muvtx_'
     pattern = r'muvtx_(\d{3})_'
     match = re.search(pattern, serial_number)
 
     if match:
         version_digits = match.group(1)
-        # Convert '012' to '1.2'
-        major = str(int(version_digits[1]))  # Remove leading zero
+
+        major = str(int(version_digits[1]))
         minor = version_digits[2]
-        return f"{major}.{minor}"
+        return f'{major}.{minor}'
 
     return None
 
 
-def add_version_column(df: pd.DataFrame) -> None:
+def add_version_column(things: Things) -> None:
     """Add version column to DataFrame based on serial_number.
 
     Parameters
@@ -179,13 +266,13 @@ def add_version_column(df: pd.DataFrame) -> None:
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with added version column
+    None
     """
-    df['version'] = df['numero_de_s_rie'].apply(extract_version_from_serial)
+    things['version'] = things['serial_number'].apply(
+        extract_version_from_serial)
 
 
-def add_feature_columns(df: pd.DataFrame) -> None:
+def add_feature_columns(things: Things) -> None:
     """Add feature columns (hauteur, temperature, image) based on version.
 
     Parameters
@@ -195,18 +282,13 @@ def add_feature_columns(df: pd.DataFrame) -> None:
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with added feature columns
+    None
     """
-
-    def get_features(version_str):
+    def get_features(version_str: Optional[str]) -> tuple[str, str, str]:
         if version_str is None:
             return 'Non', 'Non', 'Non'
-
         try:
-            # Convert version string to float for comparison
             version_float = float(version_str)
-
             if version_float >= 2.1:
                 return 'Oui', 'Oui', 'Oui'  # hauteur, temperature, image
             else:
@@ -215,179 +297,257 @@ def add_feature_columns(df: pd.DataFrame) -> None:
             # If version can't be converted to float, default to all 'Non'
             return 'Non', 'Non', 'Non'
 
-    # Apply the function to create the three columns
-    df[['hauteur', 'temperature', 'image']] = df['version'].apply(
+    things[['hauteur', 'temperature', 'image']] = things['version'].apply(
         lambda x: pd.Series(get_features(x))
     )
 
 
-def sensors_to_dataframe(sensors: dict) -> pd.DataFrame:
+Sensors = NewType('Sensors', pd.DataFrame)
+
+
+def sensors_to_dataframe(sensors: ControlCenterApi.Sensors) -> Sensors:
     """Transform sensors data into a pandas DataFrame.
 
     Parameters
     ----------
-    active_sensors : dict
-        Dictionary containing sensors data from API
+    sensors : RawSensors
+        List containing sensors data from API
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with columns: thing_id, sensor_human_name, etat
+    SensorsDataFrame
+        DataFrame with columns: thing_id, human_name, etat
     """
-    data = []
+    data: list[dict] = []
 
-    if 'data' in sensors:
-        for sensor in sensors['data']:
-            thing_id = sensor.get('thing_active', {}).get('id')
-            data.append({
-                'thing_id': thing_id,
-                'sensor_human_name': sensor.get('human_name'),
-                'etat': None if thing_id is None else 'Opérationnel'
-            })
-
-    return pd.DataFrame(data)
+    for sensor in sensors:
+        thing_id = sensor.get('thing_active', {}).get('id')
+        data.append({
+            'prod_name': thing_id,
+            'human_name': sensor.get('human_name'),
+        })
+    return Sensors(pd.DataFrame(data))
 
 
-def add_status_column(df: pd.DataFrame, sensors: dict) -> pd.DataFrame:
-    """Add status column using DataFrame join for better performance.
+def add_human_name_column(things: Things, sensors: Sensors) -> Things:
+    """Add human_name column using DataFrame join for better performance.
 
     Parameters
     ----------
     df : pd.DataFrame
         DataFrame with prod_name column
-    active_sensors : dict
-        Dictionary containing active sensors data from API
+    sensors : pd.DataFrame
+        DataFrame containing active sensors data from API
 
     Returns
     -------
     pd.DataFrame
-        DataFrame with added 'etat' column
+        DataFrame with added 'status' column
     """
-    # Convert active sensors to DataFrame
-    active_df = sensors_to_dataframe(sensors)
 
     # Left join on prod_name = thing_id
-    df_with_status = df.merge(
-        active_df[['thing_id', 'etat']],
-        left_on='prod_name',
-        right_on='thing_id',
+    things_with_human_name = things.merge(
+        sensors,
+        on='prod_name',
         how='left'
     )
 
-    # Fill NaN values with 'Non opérationnel'
-    df_with_status['etat'] = df_with_status['etat'].fillna('Non opérationnel')
-
-    # Drop the extra thing_id column from the join
-    df_with_status = df_with_status.drop('thing_id', axis=1)
-
-    return df_with_status
+    return things_with_human_name
 
 
-def add_activation_date_column(df: pd.DataFrame) -> None:
-    """Add activation date column based on status and updated_at.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with 'updated_at' and 'etat' columns
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with added 'date_activation_sur_pm_actuel' column
-    """
-
-    # Add the activation date column
-    df['date_activation_sur_pm_actuel'] = df.apply(
-        lambda row: row['updated_at'] if row['etat'] == 'Opérationnel' else None,
-        axis=1
-    )
-
-
-def add_deactivation_date_column(df: pd.DataFrame) -> None:
+def add_deactivation_date_column(things: Things) -> None:
     """Add deactivation date column based on status and updated_at.
 
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame with 'updated_at' and 'etat' columns
+        DataFrame with 'updated_at' and 'status' columns
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with added 'date_desactivation' column
+    None
     """
 
     # Add the deactivation date column using np.where for efficiency
-    df['date_desactivation'] = df.apply(
-        lambda row: row['updated_at'] if row['etat'] == 'Non opérationnel' else None,
+    things['deactivation_date'] = things.apply(
+        lambda row: row['updated_at'] if row['status'] == 'Out of order' else None,
         axis=1
     )
 
 
-PAYLOAD_DATABASE_TABLE = 'metrics_prod'
-Sensor = NewType('Sensor', str)
-StartDate = NewType('StartDate', datetime)
-EndDate = NewType('EndDate', datetime)
-RawPayload = NewType('RawPayload', dict)
-RawPayloads = list[RawPayload]
-
-
 class PayloadDatabase:
+    """Database client for payloads."""
+
+    HumanName = NewType('HumanName', str)
+    ProdNumber = NewType('ProdNumber', str)
+    RawPayload = NewType('RawPayload', dict)
+    PAYLOAD_DATABASE_TABLE = 'metrics_prod'
 
     def __init__(self) -> None:
-        # session = boto3.Session(profile_name=PAYLOAD_DATABASE_AWS_PROFILE)
+        """Initialize the PayloadDatabase client."""
         dynamodb = boto3.resource('dynamodb')
-        self.table = dynamodb.Table(PAYLOAD_DATABASE_TABLE)
+        self.table = dynamodb.Table(PayloadDatabase.PAYLOAD_DATABASE_TABLE)
 
-    def get(self, sensor: Sensor, prod_number: str) -> RawPayloads:
+    def get_first_payload(self, human_name: 'PayloadDatabase.HumanName', prod_number: 'PayloadDatabase.ProdNumber') -> Optional[RawPayload]:
+        """Get the first payload for a sensor and prod_number.
+
+        Parameters
+        ----------
+        sensor : Sensor
+            The sensor human name as a custom type
+        prod_number : str
+            The production number
+
+        Returns
+        -------
+        Optional[RawPayload]
+            The first payload dictionary if found, otherwise None
+        """
         response = self.table.query(
             IndexName='id-human_name-index',
             KeyConditionExpression=Key('id').eq(
-                prod_number) & Key('human_name').eq(sensor),
-            ScanIndexForward=True,  # Équivalent de ScanIndexForward = true
-            Limit=1  # Équivalent de ->first()
+                prod_number) & Key('human_name').eq(human_name),
+            ScanIndexForward=True,
+            Limit=1
         )
         return response['Items'][0] if response['Items'] else None
 
 
-def build_link_dates(sensors) -> pd.DataFrame:
-    link_dates = []
+def get_link_date(human_name: PayloadDatabase.HumanName, prod_number: PayloadDatabase.ProdNumber, payload_db: PayloadDatabase) -> Optional[pd.Timestamp]:
+    """Get the link date for a specific sensor.
+
+    Parameters
+    ----------
+    human_name : str
+        The human-readable name of the sensor
+
+    Returns
+    -------
+    Optional[pd.Timestamp]
+        The link date if found, otherwise None
+    """
+    first_payload = payload_db.get_first_payload(human_name, prod_number)
+    return None if first_payload is None else first_payload['time_stamp']
+
+
+LinkDates = NewType('LinkDates', pd.DataFrame)
+
+
+def get_link_dates(sensors: Sensors, control_center: ControlCenterApi) -> LinkDates:
+    """Build a DataFrame of link dates for sensors and things.
+
+    Parameters
+    ----------
+    sensors : dict
+        Dictionary containing sensors data from API
+    control_center : ControlCenterApi
+        Control center API client
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns: human_name, prod_name, link_date
+    """
+    link_dates: list[dict] = []
     payload_db = PayloadDatabase()
-    for sensor in sensors['data']:
-        for thing in sensor.get('all_things', []):
+    for human_name in sensors['human_name']:
+        all_things = control_center.get_sensor_all_things(human_name)
+        for thing in all_things:
             prod_number = thing['id']
+            link_date = get_link_date(PayloadDatabase.HumanName(
+                human_name), PayloadDatabase.ProdNumber(prod_number), payload_db)
+            link_dates.append({
+                'human_name': human_name,
+                'prod_name': prod_number,
+                'link_date': link_date,
+            })
+    dataframe = pd.DataFrame(link_dates)
+    dataframe.sort_values(by='human_name', inplace=True)
+    return LinkDates(dataframe)
 
-            first_payload = payload_db.get(
-                Sensor(sensor['human_name']), prod_number)
-            if first_payload is not None:
-                link_dates.append({'prod_name': prod_number,
-                                   'link_date': first_payload['time_stamp']})
 
-    return pd.DataFrame(link_dates)
+def add_last_link_date(things: Things, link_dates: LinkDates) -> Things:
+    """Add link date column to things DataFrame using link_dates.
 
+    Parameters
+    ----------
+    things : Things
+        DataFrame containing things data
+    link_dates : LinkDates
+        DataFrame containing link dates for sensors and things
+
+    Returns
+    -------
+    Things
+        DataFrame with activation date column added
+    -------
+    None
+    """
+
+    things_merged = things.merge(link_dates[['human_name', 'link_date']], on='human_name', how='left')
+
+    return things_merged
+
+def add_first_link_date(things: Things, link_dates: LinkDates) -> Things:
+    """Add first link date column to things DataFrame using the oldest link date per prod_name.
+
+    Parameters
+    ----------
+    things : Things
+        DataFrame containing things data
+    link_dates : LinkDates
+        DataFrame containing link dates for sensors and things
+
+    Returns
+    -------
+    Things
+        DataFrame with first link date column added
+    """
+    # Keep only the oldest link_date for each prod_name
+    oldest_link_dates = (
+        link_dates
+        .sort_values('link_date')
+        .drop_duplicates(subset=['prod_name'], keep='first')
+        .rename(columns={'link_date': 'first_link_date'})
+    )
+
+    things_merged = things.merge(
+        oldest_link_dates[['prod_name', 'first_link_date']],
+        on='prod_name',
+        how='left'
+    )
+    return things_merged
 
 def main() -> NoReturn:  # pragma: no cover
     """Entry point."""
     credentials = ControlCenterCredentials.from_env()
     control_center = ControlCenterApi(credentials)
 
-    things = control_center.list_thing()
-
-    things = things_to_dataframe(things)
+    things = things_to_dataframe(control_center.list_things())
     add_version_column(things)
     add_feature_columns(things)
+    things.to_csv('things.csv', index=False, sep=";", encoding='utf-8')
 
-    sensors = control_center.get_sensors(args='thing,human_name,all_things')
-    things = add_status_column(things, sensors)
-    add_activation_date_column(things)
-    add_deactivation_date_column(things)
-    # print(sensors)
+    sensors = sensors_to_dataframe(
+        control_center.get_sensors(args='thing,human_name'))
+    
+    things = add_human_name_column(things, sensors)
 
-    # print(things)
-    # print(things.dtypes)
 
-    link_date = build_link_dates(sensors)
+    sensors = Sensors(sensors.head(10))
+    link_dates = get_link_dates(sensors, control_center)
+    link_dates.to_csv('link_dates.csv', index=False, sep=";", encoding='utf-8')
+
+    things = add_last_link_date(things, link_dates)
+    things = add_first_link_date(things, link_dates)
+    things.to_csv('things.csv', index=False, sep=";", encoding='utf-8')
+
+    # things = add_human_name_column(things, sensors)
+    # add_activation_date_column(things)
+    # add_deactivation_date_column(things)
+
+    # link_dates = build_link_dates(sensors, control_center)
+    #
 
     sys.exit(0)
 
